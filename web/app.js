@@ -525,10 +525,6 @@ let PDFViewerApplication = {
     return this.pdfDocument ? this.pdfDocument.numPages : 0;
   },
 
-  get pageRotation() {
-    return this.pdfViewer.pagesRotation;
-  },
-
   set page(val) {
     this.pdfViewer.currentPageNumber = val;
   },
@@ -759,6 +755,10 @@ let PDFViewerApplication = {
     return loadingTask.promise.then((pdfDocument) => {
       this.load(pdfDocument);
     }, (exception) => {
+      if (loadingTask !== this.pdfLoadingTask) {
+        return; // Ignore errors for previously opened PDF files.
+      }
+
       let message = exception && exception.message;
       let loadingErrorMessage;
       if (exception instanceof InvalidPDFException) {
@@ -1668,7 +1668,8 @@ function webViewerPageRendered(evt) {
     thumbnailView.setImage(pageView);
   }
 
-  if (PDFJS.pdfBug && Stats.enabled && pageView.stats) {
+  if (PDFJS.pdfBug && typeof Stats !== 'undefined' && Stats.enabled &&
+      pageView.stats) {
     Stats.add(pageNumber, pageView.stats);
   }
 
@@ -1957,9 +1958,9 @@ function webViewerPageChanging(evt) {
   }
 
   // we need to update stats
-  if (PDFJS.pdfBug && Stats.enabled) {
+  if (PDFJS.pdfBug && typeof Stats !== 'undefined' && Stats.enabled) {
     let pageView = PDFViewerApplication.pdfViewer.getPageView(page - 1);
-    if (pageView.stats) {
+    if (pageView && pageView.stats) {
       Stats.add(page, pageView.stats);
     }
   }
