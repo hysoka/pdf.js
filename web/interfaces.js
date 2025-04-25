@@ -1,4 +1,4 @@
-/* Copyright 2014 Mozilla Foundation
+/* Copyright 2018 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -12,16 +12,24 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-/* eslint-disable no-unused-vars */
+/* eslint-disable getter-return */
 
-'use strict';
+/** @typedef {import("../src/display/api").PDFPageProxy} PDFPageProxy */
+// eslint-disable-next-line max-len
+/** @typedef {import("../src/display/display_utils").PageViewport} PageViewport */
+/** @typedef {import("./ui_utils").RenderingStates} RenderingStates */
 
 /**
  * @interface
  */
 class IPDFLinkService {
   /**
-   * @returns {number}
+   * @type {number}
+   */
+  get pagesCount() {}
+
+  /**
+   * @type {number}
    */
   get page() {}
 
@@ -31,7 +39,7 @@ class IPDFLinkService {
   set page(value) {}
 
   /**
-   * @returns {number}
+   * @type {number}
    */
   get rotation() {}
 
@@ -41,9 +49,36 @@ class IPDFLinkService {
   set rotation(value) {}
 
   /**
-   * @param dest - The PDF destination object.
+   * @type {boolean}
    */
-  navigateTo(dest) {}
+  get isInPresentationMode() {}
+
+  /**
+   * @type {boolean}
+   */
+  get externalLinkEnabled() {}
+
+  /**
+   * @param {boolean} value
+   */
+  set externalLinkEnabled(value) {}
+
+  /**
+   * @param {string|Array} dest - The named, or explicit, PDF destination.
+   */
+  async goToDestination(dest) {}
+
+  /**
+   * @param {number|string} val - The page number, or page label.
+   */
+  goToPage(val) {}
+
+  /**
+   * @param {HTMLAnchorElement} link
+   * @param {string} url
+   * @param {boolean} [newWindow]
+   */
+  addLinkAttributes(link, url, newWindow = false) {}
 
   /**
    * @param dest - The PDF destination object.
@@ -68,90 +103,61 @@ class IPDFLinkService {
   executeNamedAction(action) {}
 
   /**
-   * @param {Object} params
+   * @param {Object} action
    */
-  onFileAttachmentAnnotation({ id, filename, content, }) {}
-
-  /**
-   * @param {number} pageNum - page number.
-   * @param {Object} pageRef - reference to the page.
-   */
-  cachePageRef(pageNum, pageRef) {}
-}
-
-/**
- * @interface
- */
-class IPDFHistory {
-  /**
-   * @param {string} fingerprint - The PDF document's unique fingerprint.
-   * @param {boolean} resetHistory - (optional) Reset the browsing history.
-   */
-  initialize(fingerprint, resetHistory = false) {}
-
-  /**
-   * @param {Object} params
-   */
-  push({ namedDest, explicitDest, pageNumber, }) {}
-
-  pushCurrentPosition() {}
-
-  back() {}
-
-  forward() {}
+  executeSetOCGState(action) {}
 }
 
 /**
  * @interface
  */
 class IRenderableView {
+  constructor() {
+    /** @type {function | null} */
+    this.resume = null;
+  }
+
   /**
-   * @returns {string} - Unique ID for rendering queue.
+   * @type {string} - Unique ID for rendering queue.
    */
   get renderingId() {}
 
   /**
-   * @returns {RenderingStates}
+   * @type {RenderingStates}
    */
   get renderingState() {}
 
   /**
    * @returns {Promise} Resolved on draw completion.
    */
-  draw() {}
-
-  resume() {}
+  async draw() {}
 }
 
 /**
  * @interface
  */
-class IPDFTextLayerFactory {
+class IDownloadManager {
   /**
-   * @param {HTMLDivElement} textLayerDiv
-   * @param {number} pageIndex
-   * @param {PageViewport} viewport
-   * @param {boolean} enhanceTextSelection
-   * @returns {TextLayerBuilder}
+   * @param {Uint8Array} data
+   * @param {string} filename
+   * @param {string} [contentType]
    */
-  createTextLayerBuilder(textLayerDiv, pageIndex, viewport,
-                         enhanceTextSelection = false) {}
-}
+  downloadData(data, filename, contentType) {}
 
-/**
- * @interface
- */
-class IPDFAnnotationLayerFactory {
   /**
-   * @param {HTMLDivElement} pageDiv
-   * @param {PDFPage} pdfPage
-   * @param {IL10n} l10n
-   * @param {boolean} renderInteractiveForms
-   * @returns {AnnotationLayerBuilder}
+   * @param {Uint8Array} data
+   * @param {string} filename
+   * @param {string | null} [dest]
+   * @returns {boolean} Indicating if the data was opened.
    */
-  createAnnotationLayerBuilder(pageDiv, pdfPage,
-                               renderInteractiveForms = false,
-                               l10n = undefined) {}
+  openOrDownloadData(data, filename, dest = null) {}
+
+  /**
+   * @param {Uint8Array} data
+   * @param {string} url
+   * @param {string} filename
+   */
+  download(data, url, filename) {}
 }
 
 /**
@@ -159,7 +165,12 @@ class IPDFAnnotationLayerFactory {
  */
 class IL10n {
   /**
-   * @returns {Promise<string>} - Resolves to 'rtl' or 'ltr'.
+   * @returns {string} - The current locale.
+   */
+  getLanguage() {}
+
+  /**
+   * @returns {string} - 'rtl' or 'ltr'.
    */
   getDirection() {}
 
@@ -167,17 +178,50 @@ class IL10n {
    * Translates text identified by the key and adds/formats data using the args
    * property bag. If the key was not found, translation falls back to the
    * fallback text.
-   * @param {string} key
-   * @param {object} args
-   * @param {string} fallback
+   * @param {Array | string} ids
+   * @param {Object | null} [args]
+   * @param {string} [fallback]
    * @returns {Promise<string>}
    */
-  get(key, args, fallback) { }
+  async get(ids, args = null, fallback) {}
 
   /**
    * Translates HTML element.
    * @param {HTMLElement} element
    * @returns {Promise<void>}
    */
-  translate(element) { }
+  async translate(element) {}
+
+  /**
+   * Pause the localization.
+   */
+  pause() {}
+
+  /**
+   * Resume the localization.
+   */
+  resume() {}
 }
+
+/**
+ * @interface
+ */
+class IPDFPrintServiceFactory {
+  static initGlobals() {}
+
+  static get supportsPrinting() {
+    return false;
+  }
+
+  static createPrintService() {
+    throw new Error("Not implemented: createPrintService");
+  }
+}
+
+export {
+  IDownloadManager,
+  IL10n,
+  IPDFLinkService,
+  IPDFPrintServiceFactory,
+  IRenderableView,
+};

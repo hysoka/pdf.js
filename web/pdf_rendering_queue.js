@@ -13,14 +13,15 @@
  * limitations under the License.
  */
 
-const CLEANUP_TIMEOUT = 30000;
+/** @typedef {import("./interfaces").IRenderableView} IRenderableView */
+/** @typedef {import("./pdf_viewer").PDFViewer} PDFViewer */
+// eslint-disable-next-line max-len
+/** @typedef {import("./pdf_thumbnail_viewer").PDFThumbnailViewer} PDFThumbnailViewer */
 
-const RenderingStates = {
-  INITIAL: 0,
-  RUNNING: 1,
-  PAUSED: 2,
-  FINISHED: 3,
-};
+import { RenderingCancelledException } from "pdfjs-lib";
+import { RenderingStates } from "./ui_utils.js";
+
+const CLEANUP_TIMEOUT = 30000;
 
 /**
  * Controls rendering of the views for pages and thumbnails.
@@ -31,9 +32,16 @@ class PDFRenderingQueue {
     this.pdfThumbnailViewer = null;
     this.onIdle = null;
     this.highestPriorityPage = null;
+    /** @type {number} */
     this.idleTimeout = null;
     this.printing = false;
     this.isThumbnailViewEnabled = false;
+
+    if (typeof PDFJSDev === "undefined" || PDFJSDev.test("GENERIC")) {
+      Object.defineProperty(this, "hasViewer", {
+        value: () => !!this.pdfViewer,
+      });
+    }
   }
 
   /**
@@ -72,10 +80,11 @@ class PDFRenderingQueue {
       return;
     }
     // No pages needed rendering, so check thumbnails.
-    if (this.pdfThumbnailViewer && this.isThumbnailViewEnabled) {
-      if (this.pdfThumbnailViewer.forceRendering()) {
-        return;
-      }
+    if (
+      this.isThumbnailViewEnabled &&
+      this.pdfThumbnailViewer?.forceRendering()
+    ) {
+      return;
     }
 
     if (this.printing) {
@@ -92,42 +101,81 @@ class PDFRenderingQueue {
    * @param {Object} visible
    * @param {Array} views
    * @param {boolean} scrolledDown
+   * @param {boolean} [preRenderExtra]
+   * @param {boolean} [ignoreDetailViews]
    */
-  getHighestPriority(visible, views, scrolledDown) {
+  getHighestPriority(
+    visible,
+    views,
+    scrolledDown,
+    preRenderExtra = false,
+    ignoreDetailViews = false
+  ) {
     /**
      * The state has changed. Figure out which page has the highest priority to
      * render next (if any).
      *
      * Priority:
      * 1. visible pages
-     * 2. if last scrolled down, the page after the visible pages, or
+     * 2. zoomed-in partial views of visible pages, unless `ignoreDetailViews`
+     * 3. if last scrolled down, the page after the visible pages, or
      *    if last scrolled up, the page before the visible pages
      */
-    let visibleViews = visible.views;
+    const visibleViews = visible.views,
+      numVisible = visibleViews.length;
 
-    let numVisible = visibleViews.length;
     if (numVisible === 0) {
-      return false;
+      return null;
     }
-    for (let i = 0; i < numVisible; ++i) {
-      let view = visibleViews[i].view;
+    for (let i = 0; i < numVisible; i++) {
+      const view = visibleViews[i].view;
       if (!this.isViewFinished(view)) {
         return view;
       }
     }
 
-    // All the visible views have rendered; try to render next/previous pages.
-    if (scrolledDown) {
-      let nextPageIndex = visible.last.id;
-      // IDs start at 1, so no need to add 1.
-      if (views[nextPageIndex] && !this.isViewFinished(views[nextPageIndex])) {
-        return views[nextPageIndex];
+    if (!ignoreDetailViews) {
+      for (let i = 0; i < numVisible; i++) {
+        const { detailView } = visibleViews[i].view;
+        if (detailView && !this.isViewFinished(detailView)) {
+          return detailView;
+        }
       }
-    } else {
-      let previousPageIndex = visible.first.id - 2;
-      if (views[previousPageIndex] &&
-          !this.isViewFinished(views[previousPageIndex])) {
-        return views[previousPageIndex];
+    }
+
+    const firstId = visible.first.id,
+      lastId = visible.last.id;
+
+    // All the visible views have rendered; try to handle any "holes" in the
+    // page layout (can happen e.g. with spreadModes at higher zoom levels).
+    if (lastId - firstId + 1 > numVisible) {
+      const visibleIds = visible.ids;
+      for (let i = 1, ii = lastId - firstId; i < ii; i++) {
+        const holeId = scrolledDown ? firstId + i : lastId - i;
+        if (visibleIds.has(holeId)) {
+          continue;
+        }
+        const holeView = views[holeId - 1];
+        if (!this.isViewFinished(holeView)) {
+          return holeView;
+        }
+      }
+    }
+
+    // All the visible views have rendered; try to render next/previous page.
+    // (IDs start at 1, so no need to add 1 when `scrolledDown === true`.)
+    let preRenderIndex = scrolledDown ? lastId : firstId - 2;
+    let preRenderView = views[preRenderIndex];
+
+    if (preRenderView && !this.isViewFinished(preRenderView)) {
+      return preRenderView;
+    }
+    if (preRenderExtra) {
+      preRenderIndex += scrolledDown ? 1 : -1;
+      preRenderView = views[preRenderIndex];
+
+      if (preRenderView && !this.isViewFinished(preRenderView)) {
+        return preRenderView;
       }
     }
     // Everything that needs to be rendered has been.
@@ -162,17 +210,21 @@ class PDFRenderingQueue {
         break;
       case RenderingStates.INITIAL:
         this.highestPriorityPage = view.renderingId;
-        let continueRendering = () => {
-          this.renderHighestPriority();
-        };
-        view.draw().then(continueRendering, continueRendering);
+        view
+          .draw()
+          .finally(() => {
+            this.renderHighestPriority();
+          })
+          .catch(reason => {
+            if (reason instanceof RenderingCancelledException) {
+              return;
+            }
+            console.error("renderView:", reason);
+          });
         break;
     }
     return true;
   }
 }
 
-export {
-  RenderingStates,
-  PDFRenderingQueue,
-};
+export { PDFRenderingQueue };

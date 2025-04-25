@@ -14,198 +14,247 @@
  */
 
 import {
-  bytesToString, isArrayBuffer, isBool, isEmptyObj, isNum, isSpace, isString,
-  log2, ReadableStream, removeNullCharacters, stringToBytes, stringToPDFString
-} from '../../src/shared/util';
+  BaseException,
+  bytesToString,
+  createValidAbsoluteUrl,
+  getModificationDate,
+  getUuid,
+  string32,
+  stringToBytes,
+  stringToPDFString,
+} from "../../src/shared/util.js";
 
-describe('util', function() {
-  describe('bytesToString', function() {
-    it('handles non-array arguments', function() {
-      expect(function() {
+describe("util", function () {
+  describe("BaseException", function () {
+    it("can initialize exception classes derived from BaseException", function () {
+      class DerivedException extends BaseException {
+        constructor(message) {
+          super(message, "DerivedException");
+          this.foo = "bar";
+        }
+      }
+
+      const exception = new DerivedException("Something went wrong");
+      expect(exception instanceof DerivedException).toEqual(true);
+      expect(exception instanceof BaseException).toEqual(true);
+      expect(exception.message).toEqual("Something went wrong");
+      expect(exception.name).toEqual("DerivedException");
+      expect(exception.foo).toEqual("bar");
+      expect(exception.stack).toContain("BaseExceptionClosure");
+    });
+  });
+
+  describe("bytesToString", function () {
+    it("handles non-array arguments", function () {
+      expect(function () {
         bytesToString(null);
-      }).toThrow(new Error('Invalid argument for bytesToString'));
+      }).toThrow(new Error("Invalid argument for bytesToString"));
     });
 
-    it('handles array arguments with a length not exceeding the maximum',
-        function() {
-      expect(bytesToString(new Uint8Array([]))).toEqual('');
-      expect(bytesToString(new Uint8Array([102, 111, 111]))).toEqual('foo');
+    it("handles array arguments with a length not exceeding the maximum", function () {
+      expect(bytesToString(new Uint8Array([]))).toEqual("");
+      expect(bytesToString(new Uint8Array([102, 111, 111]))).toEqual("foo");
     });
 
-    it('handles array arguments with a length exceeding the maximum',
-        function() {
+    it("handles array arguments with a length exceeding the maximum", function () {
       const length = 10000; // Larger than MAX_ARGUMENT_COUNT = 8192.
 
       // Create an array with `length` 'a' character codes.
-      let bytes = new Uint8Array(length);
+      const bytes = new Uint8Array(length);
       for (let i = 0; i < length; i++) {
-        bytes[i] = 'a'.charCodeAt(0);
+        bytes[i] = "a".charCodeAt(0);
       }
 
-      // Create a string with `length` 'a' characters. We need an array of size
-      // `length + 1` since `join` puts the argument between the array elements.
-      let string = Array(length + 1).join('a');
+      // Create a string with `length` 'a' characters.
+      const string = "a".repeat(length);
 
       expect(bytesToString(bytes)).toEqual(string);
     });
   });
 
-  describe('isArrayBuffer', function() {
-    it('handles array buffer values', function() {
-      expect(isArrayBuffer(new ArrayBuffer(0))).toEqual(true);
-      expect(isArrayBuffer(new Uint8Array(0))).toEqual(true);
-    });
-
-    it('handles non-array buffer values', function() {
-      expect(isArrayBuffer('true')).toEqual(false);
-      expect(isArrayBuffer(1)).toEqual(false);
-      expect(isArrayBuffer(null)).toEqual(false);
-      expect(isArrayBuffer(undefined)).toEqual(false);
+  describe("string32", function () {
+    it("converts unsigned 32-bit integers to strings", function () {
+      expect(string32(0x74727565)).toEqual("true");
+      expect(string32(0x74797031)).toEqual("typ1");
+      expect(string32(0x4f54544f)).toEqual("OTTO");
     });
   });
 
-  describe('isBool', function() {
-    it('handles boolean values', function() {
-      expect(isBool(true)).toEqual(true);
-      expect(isBool(false)).toEqual(true);
-    });
-
-    it('handles non-boolean values', function() {
-      expect(isBool('true')).toEqual(false);
-      expect(isBool('false')).toEqual(false);
-      expect(isBool(1)).toEqual(false);
-      expect(isBool(0)).toEqual(false);
-      expect(isBool(null)).toEqual(false);
-      expect(isBool(undefined)).toEqual(false);
-    });
-  });
-
-  describe('isEmptyObj', function() {
-    it('handles empty objects', function() {
-      expect(isEmptyObj({})).toEqual(true);
-    });
-
-    it('handles non-empty objects', function() {
-      expect(isEmptyObj({ foo: 'bar', })).toEqual(false);
-    });
-  });
-
-  describe('isNum', function() {
-    it('handles numeric values', function() {
-      expect(isNum(1)).toEqual(true);
-      expect(isNum(0)).toEqual(true);
-      expect(isNum(-1)).toEqual(true);
-      expect(isNum(1000000000000000000)).toEqual(true);
-      expect(isNum(12.34)).toEqual(true);
-    });
-
-    it('handles non-numeric values', function() {
-      expect(isNum('true')).toEqual(false);
-      expect(isNum(true)).toEqual(false);
-      expect(isNum(null)).toEqual(false);
-      expect(isNum(undefined)).toEqual(false);
-    });
-  });
-
-  describe('isSpace', function() {
-    it('handles space characters', function() {
-      expect(isSpace(0x20)).toEqual(true);
-      expect(isSpace(0x09)).toEqual(true);
-      expect(isSpace(0x0D)).toEqual(true);
-      expect(isSpace(0x0A)).toEqual(true);
-    });
-
-    it('handles non-space characters', function() {
-      expect(isSpace(0x0B)).toEqual(false);
-      expect(isSpace(null)).toEqual(false);
-      expect(isSpace(undefined)).toEqual(false);
-    });
-  });
-
-  describe('isString', function() {
-    it('handles string values', function() {
-      expect(isString('foo')).toEqual(true);
-      expect(isString('')).toEqual(true);
-    });
-
-    it('handles non-string values', function() {
-      expect(isString(true)).toEqual(false);
-      expect(isString(1)).toEqual(false);
-      expect(isString(null)).toEqual(false);
-      expect(isString(undefined)).toEqual(false);
-    });
-  });
-
-  describe('log2', function() {
-    it('handles values smaller than/equal to zero', function() {
-      expect(log2(0)).toEqual(0);
-      expect(log2(-1)).toEqual(0);
-    });
-
-    it('handles values larger than zero', function() {
-      expect(log2(1)).toEqual(0);
-      expect(log2(2)).toEqual(1);
-      expect(log2(3)).toEqual(2);
-      expect(log2(3.14)).toEqual(2);
-    });
-  });
-
-  describe('stringToBytes', function() {
-    it('handles non-string arguments', function() {
-      expect(function() {
+  describe("stringToBytes", function () {
+    it("handles non-string arguments", function () {
+      expect(function () {
         stringToBytes(null);
-      }).toThrow(new Error('Invalid argument for stringToBytes'));
+      }).toThrow(new Error("Invalid argument for stringToBytes"));
     });
 
-    it('handles string arguments', function() {
-      expect(stringToBytes('')).toEqual(new Uint8Array([]));
-      expect(stringToBytes('foo')).toEqual(new Uint8Array([102, 111, 111]));
+    it("handles string arguments", function () {
+      expect(stringToBytes("")).toEqual(new Uint8Array([]));
+      expect(stringToBytes("foo")).toEqual(new Uint8Array([102, 111, 111]));
     });
   });
 
-  describe('stringToPDFString', function() {
-    it('handles ISO Latin 1 strings', function() {
-      let str = '\x8Dstring\x8E';
-      expect(stringToPDFString(str)).toEqual('\u201Cstring\u201D');
+  describe("stringToPDFString", function () {
+    it("handles ISO Latin 1 strings", function () {
+      const str = "\x8Dstring\x8E";
+      expect(stringToPDFString(str)).toEqual("\u201Cstring\u201D");
     });
 
-    it('handles UTF-16BE strings', function() {
-      let str = '\xFE\xFF\x00\x73\x00\x74\x00\x72\x00\x69\x00\x6E\x00\x67';
-      expect(stringToPDFString(str)).toEqual('string');
+    it("handles UTF-16 big-endian strings", function () {
+      const str = "\xFE\xFF\x00\x73\x00\x74\x00\x72\x00\x69\x00\x6E\x00\x67";
+      expect(stringToPDFString(str)).toEqual("string");
     });
 
-    it('handles empty strings', function() {
+    it("handles incomplete UTF-16 big-endian strings", function () {
+      const str = "\xFE\xFF\x00\x73\x00\x74\x00\x72\x00\x69\x00\x6E\x00";
+      expect(stringToPDFString(str)).toEqual("strin");
+    });
+
+    it("handles UTF-16 little-endian strings", function () {
+      const str = "\xFF\xFE\x73\x00\x74\x00\x72\x00\x69\x00\x6E\x00\x67\x00";
+      expect(stringToPDFString(str)).toEqual("string");
+    });
+
+    it("handles incomplete UTF-16 little-endian strings", function () {
+      const str = "\xFF\xFE\x73\x00\x74\x00\x72\x00\x69\x00\x6E\x00\x67";
+      expect(stringToPDFString(str)).toEqual("strin");
+    });
+
+    it("handles UTF-8 strings", function () {
+      const simpleStr = "\xEF\xBB\xBF\x73\x74\x72\x69\x6E\x67";
+      expect(stringToPDFString(simpleStr)).toEqual("string");
+
+      const complexStr =
+        "\xEF\xBB\xBF\xE8\xA1\xA8\xE3\x83\x9D\xE3\x81\x82\x41\xE9\xB7\x97" +
+        "\xC5\x92\xC3\xA9\xEF\xBC\xA2\xE9\x80\x8D\xC3\x9C\xC3\x9F\xC2\xAA" +
+        "\xC4\x85\xC3\xB1\xE4\xB8\x82\xE3\x90\x80\xF0\xA0\x80\x80";
+      expect(stringToPDFString(complexStr)).toEqual(
+        "表ポあA鷗ŒéＢ逍Üßªąñ丂㐀𠀀"
+      );
+    });
+
+    it("handles empty strings", function () {
       // ISO Latin 1
-      let str1 = '';
-      expect(stringToPDFString(str1)).toEqual('');
+      const str1 = "";
+      expect(stringToPDFString(str1)).toEqual("");
 
       // UTF-16BE
-      let str2 = '\xFE\xFF';
-      expect(stringToPDFString(str2)).toEqual('');
+      const str2 = "\xFE\xFF";
+      expect(stringToPDFString(str2)).toEqual("");
+
+      // UTF-16LE
+      const str3 = "\xFF\xFE";
+      expect(stringToPDFString(str3)).toEqual("");
+
+      // UTF-8
+      const str4 = "\xEF\xBB\xBF";
+      expect(stringToPDFString(str4)).toEqual("");
+    });
+
+    it("handles strings with language code", function () {
+      // ISO Latin 1
+      const str1 = "hello \x1benUS\x1bworld";
+      expect(stringToPDFString(str1)).toEqual("hello world");
+
+      // UTF-16BE
+      const str2 =
+        "\xFE\xFF\x00h\x00e\x00l\x00l\x00o\x00 \x00\x1b\x00e\x00n\x00U\x00S\x00\x1b\x00w\x00o\x00r\x00l\x00d";
+      expect(stringToPDFString(str2)).toEqual("hello world");
+
+      // UTF-16LE
+      const str3 =
+        "\xFF\xFEh\x00e\x00l\x00l\x00o\x00 \x00\x1b\x00e\x00n\x00U\x00S\x00\x1b\x00w\x00o\x00r\x00l\x00d\x00";
+      expect(stringToPDFString(str3)).toEqual("hello world");
     });
   });
 
-  describe('removeNullCharacters', function() {
-    it('should not modify string without null characters', function() {
-      let str = 'string without null chars';
-      expect(removeNullCharacters(str)).toEqual('string without null chars');
+  describe("ReadableStream", function () {
+    it("should return an Object", function () {
+      const readable = new ReadableStream();
+      expect(typeof readable).toEqual("object");
     });
 
-    it('should modify string with null characters', function() {
-      let str = 'string\x00With\x00Null\x00Chars';
-      expect(removeNullCharacters(str)).toEqual('stringWithNullChars');
+    it("should have property getReader", function () {
+      const readable = new ReadableStream();
+      expect(typeof readable.getReader).toEqual("function");
     });
   });
 
-  describe('ReadableStream', function() {
-    it('should return an Object', function () {
-      let readable = new ReadableStream();
-      expect(typeof readable).toEqual('object');
+  describe("URL", function () {
+    it("should return an Object", function () {
+      const url = new URL("https://example.com");
+      expect(typeof url).toEqual("object");
     });
 
-    it('should have property getReader', function () {
-      let readable = new ReadableStream();
-      expect(typeof readable.getReader).toEqual('function');
+    it("should have property `href`", function () {
+      const url = new URL("https://example.com");
+      expect(typeof url.href).toEqual("string");
+    });
+  });
+
+  describe("createValidAbsoluteUrl", function () {
+    it("handles invalid URLs", function () {
+      expect(createValidAbsoluteUrl(undefined, undefined)).toEqual(null);
+      expect(createValidAbsoluteUrl(null, null)).toEqual(null);
+      expect(createValidAbsoluteUrl("/foo", "/bar")).toEqual(null);
+    });
+
+    it("handles URLs that do not use an allowed protocol", function () {
+      expect(createValidAbsoluteUrl("magnet:?foo", null)).toEqual(null);
+    });
+
+    it("correctly creates a valid URL for allowed protocols", function () {
+      // `http` protocol
+      expect(
+        createValidAbsoluteUrl("http://www.mozilla.org/foo", null)
+      ).toEqual(new URL("http://www.mozilla.org/foo"));
+      expect(createValidAbsoluteUrl("/foo", "http://www.mozilla.org")).toEqual(
+        new URL("http://www.mozilla.org/foo")
+      );
+
+      // `https` protocol
+      expect(
+        createValidAbsoluteUrl("https://www.mozilla.org/foo", null)
+      ).toEqual(new URL("https://www.mozilla.org/foo"));
+      expect(createValidAbsoluteUrl("/foo", "https://www.mozilla.org")).toEqual(
+        new URL("https://www.mozilla.org/foo")
+      );
+
+      // `ftp` protocol
+      expect(createValidAbsoluteUrl("ftp://www.mozilla.org/foo", null)).toEqual(
+        new URL("ftp://www.mozilla.org/foo")
+      );
+      expect(createValidAbsoluteUrl("/foo", "ftp://www.mozilla.org")).toEqual(
+        new URL("ftp://www.mozilla.org/foo")
+      );
+
+      // `mailto` protocol (base URLs have no meaning and should yield `null`)
+      expect(createValidAbsoluteUrl("mailto:foo@bar.baz", null)).toEqual(
+        new URL("mailto:foo@bar.baz")
+      );
+      expect(createValidAbsoluteUrl("/foo", "mailto:foo@bar.baz")).toEqual(
+        null
+      );
+
+      // `tel` protocol (base URLs have no meaning and should yield `null`)
+      expect(createValidAbsoluteUrl("tel:+0123456789", null)).toEqual(
+        new URL("tel:+0123456789")
+      );
+      expect(createValidAbsoluteUrl("/foo", "tel:0123456789")).toEqual(null);
+    });
+  });
+
+  describe("getModificationDate", function () {
+    it("should get a correctly formatted date", function () {
+      const date = new Date(Date.UTC(3141, 5, 9, 2, 6, 53));
+      expect(getModificationDate(date)).toEqual("31410609020653");
+    });
+  });
+
+  describe("getUuid", function () {
+    it("should get uuid string", function () {
+      const uuid = getUuid();
+      expect(typeof uuid).toEqual("string");
+      expect(uuid.length).toBeGreaterThanOrEqual(32);
     });
   });
 });

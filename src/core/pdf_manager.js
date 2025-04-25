@@ -13,219 +13,225 @@
  * limitations under the License.
  */
 
+import { CmykICCBasedCS, IccColorSpace } from "./icc_colorspace.js";
 import {
-  createPromiseCapability, createValidAbsoluteUrl, MissingDataException,
-  NotImplementedException, shadow, Util, warn
-} from '../shared/util';
-import { ChunkedStreamManager } from './chunked_stream';
-import { PDFDocument } from './document';
-import { Stream } from './stream';
+  createValidAbsoluteUrl,
+  FeatureTest,
+  unreachable,
+  warn,
+} from "../shared/util.js";
+import { ChunkedStreamManager } from "./chunked_stream.js";
+import { ImageResizer } from "./image_resizer.js";
+import { JpegStream } from "./jpeg_stream.js";
+import { JpxImage } from "./jpx.js";
+import { MissingDataException } from "./core_utils.js";
+import { OperatorList } from "./operator_list.js";
+import { PDFDocument } from "./document.js";
+import { Stream } from "./stream.js";
 
-var BasePdfManager = (function BasePdfManagerClosure() {
-  function BasePdfManager() {
-    throw new Error('Cannot initialize BaseManagerManager');
+function parseDocBaseUrl(url) {
+  if (url) {
+    const absoluteUrl = createValidAbsoluteUrl(url);
+    if (absoluteUrl) {
+      return absoluteUrl.href;
+    }
+    warn(`Invalid absolute docBaseUrl: "${url}".`);
   }
+  return null;
+}
 
-  BasePdfManager.prototype = {
-    get docId() {
-      return this._docId;
-    },
-
-    get password() {
-      return this._password;
-    },
-
-    get docBaseUrl() {
-      var docBaseUrl = null;
-      if (this._docBaseUrl) {
-        var absoluteUrl = createValidAbsoluteUrl(this._docBaseUrl);
-        if (absoluteUrl) {
-          docBaseUrl = absoluteUrl.href;
-        } else {
-          warn('Invalid absolute docBaseUrl: "' + this._docBaseUrl + '".');
-        }
-      }
-      return shadow(this, 'docBaseUrl', docBaseUrl);
-    },
-
-    onLoadedStream: function BasePdfManager_onLoadedStream() {
-      throw new NotImplementedException();
-    },
-
-    ensureDoc: function BasePdfManager_ensureDoc(prop, args) {
-      return this.ensure(this.pdfDocument, prop, args);
-    },
-
-    ensureXRef: function BasePdfManager_ensureXRef(prop, args) {
-      return this.ensure(this.pdfDocument.xref, prop, args);
-    },
-
-    ensureCatalog: function BasePdfManager_ensureCatalog(prop, args) {
-      return this.ensure(this.pdfDocument.catalog, prop, args);
-    },
-
-    getPage: function BasePdfManager_getPage(pageIndex) {
-      return this.pdfDocument.getPage(pageIndex);
-    },
-
-    cleanup: function BasePdfManager_cleanup() {
-      return this.pdfDocument.cleanup();
-    },
-
-    ensure: function BasePdfManager_ensure(obj, prop, args) {
-      return new NotImplementedException();
-    },
-
-    requestRange: function BasePdfManager_requestRange(begin, end) {
-      return new NotImplementedException();
-    },
-
-    requestLoadedStream: function BasePdfManager_requestLoadedStream() {
-      return new NotImplementedException();
-    },
-
-    sendProgressiveData: function BasePdfManager_sendProgressiveData(chunk) {
-      return new NotImplementedException();
-    },
-
-    updatePassword: function BasePdfManager_updatePassword(password) {
-      this._password = password;
-    },
-
-    terminate: function BasePdfManager_terminate() {
-      return new NotImplementedException();
-    },
-  };
-
-  return BasePdfManager;
-})();
-
-var LocalPdfManager = (function LocalPdfManagerClosure() {
-  function LocalPdfManager(docId, data, password, evaluatorOptions,
-                           docBaseUrl) {
+class BasePdfManager {
+  constructor({
+    // source,
+    // disableAutoFetch,
+    docBaseUrl,
+    docId,
+    enableXfa,
+    evaluatorOptions,
+    handler,
+    // length,
+    password,
+    // rangeChunkSize,
+  }) {
+    if (
+      (typeof PDFJSDev === "undefined" || PDFJSDev.test("TESTING")) &&
+      this.constructor === BasePdfManager
+    ) {
+      unreachable("Cannot initialize BasePdfManager.");
+    }
+    this._docBaseUrl = parseDocBaseUrl(docBaseUrl);
     this._docId = docId;
     this._password = password;
-    this._docBaseUrl = docBaseUrl;
-    this.evaluatorOptions = evaluatorOptions;
-    var stream = new Stream(data);
-    this.pdfDocument = new PDFDocument(this, stream);
-    this._loadedStreamCapability = createPromiseCapability();
-    this._loadedStreamCapability.resolve(stream);
+    this.enableXfa = enableXfa;
+
+    // Check `OffscreenCanvas` and `ImageDecoder` support once,
+    // rather than repeatedly throughout the worker-thread code.
+    evaluatorOptions.isOffscreenCanvasSupported &&=
+      FeatureTest.isOffscreenCanvasSupported;
+    evaluatorOptions.isImageDecoderSupported &&=
+      FeatureTest.isImageDecoderSupported;
+    this.evaluatorOptions = Object.freeze(evaluatorOptions);
+
+    // Initialize image-options once per document.
+    ImageResizer.setOptions(evaluatorOptions);
+    JpegStream.setOptions(evaluatorOptions);
+    OperatorList.setOptions(evaluatorOptions);
+
+    const options = { ...evaluatorOptions, handler };
+    JpxImage.setOptions(options);
+    IccColorSpace.setOptions(options);
+    CmykICCBasedCS.setOptions(options);
   }
 
-  Util.inherit(LocalPdfManager, BasePdfManager, {
-    ensure: function LocalPdfManager_ensure(obj, prop, args) {
-      return new Promise(function (resolve, reject) {
-        try {
-          var value = obj[prop];
-          var result;
-          if (typeof value === 'function') {
-            result = value.apply(obj, args);
-          } else {
-            result = value;
-          }
-          resolve(result);
-        } catch (e) {
-          reject(e);
-        }
-      });
-    },
+  get docId() {
+    return this._docId;
+  }
 
-    requestRange: function LocalPdfManager_requestRange(begin, end) {
-      return Promise.resolve();
-    },
+  get password() {
+    return this._password;
+  }
 
-    requestLoadedStream: function LocalPdfManager_requestLoadedStream() {
-      return;
-    },
+  get docBaseUrl() {
+    return this._docBaseUrl;
+  }
 
-    onLoadedStream: function LocalPdfManager_onLoadedStream() {
-      return this._loadedStreamCapability.promise;
-    },
+  get catalog() {
+    return this.pdfDocument.catalog;
+  }
 
-    terminate: function LocalPdfManager_terminate() {
-      return;
-    },
-  });
+  ensureDoc(prop, args) {
+    return this.ensure(this.pdfDocument, prop, args);
+  }
 
-  return LocalPdfManager;
-})();
+  ensureXRef(prop, args) {
+    return this.ensure(this.pdfDocument.xref, prop, args);
+  }
 
-var NetworkPdfManager = (function NetworkPdfManagerClosure() {
-  function NetworkPdfManager(docId, pdfNetworkStream, args, evaluatorOptions,
-                             docBaseUrl) {
-    this._docId = docId;
-    this._password = args.password;
-    this._docBaseUrl = docBaseUrl;
-    this.msgHandler = args.msgHandler;
-    this.evaluatorOptions = evaluatorOptions;
+  ensureCatalog(prop, args) {
+    return this.ensure(this.pdfDocument.catalog, prop, args);
+  }
 
-    var params = {
-      msgHandler: args.msgHandler,
-      url: args.url,
+  getPage(pageIndex) {
+    return this.pdfDocument.getPage(pageIndex);
+  }
+
+  fontFallback(id, handler) {
+    return this.pdfDocument.fontFallback(id, handler);
+  }
+
+  loadXfaFonts(handler, task) {
+    return this.pdfDocument.loadXfaFonts(handler, task);
+  }
+
+  loadXfaImages() {
+    return this.pdfDocument.loadXfaImages();
+  }
+
+  serializeXfaData(annotationStorage) {
+    return this.pdfDocument.serializeXfaData(annotationStorage);
+  }
+
+  cleanup(manuallyTriggered = false) {
+    return this.pdfDocument.cleanup(manuallyTriggered);
+  }
+
+  async ensure(obj, prop, args) {
+    unreachable("Abstract method `ensure` called");
+  }
+
+  requestRange(begin, end) {
+    unreachable("Abstract method `requestRange` called");
+  }
+
+  requestLoadedStream(noFetch = false) {
+    unreachable("Abstract method `requestLoadedStream` called");
+  }
+
+  sendProgressiveData(chunk) {
+    unreachable("Abstract method `sendProgressiveData` called");
+  }
+
+  updatePassword(password) {
+    this._password = password;
+  }
+
+  terminate(reason) {
+    unreachable("Abstract method `terminate` called");
+  }
+}
+
+class LocalPdfManager extends BasePdfManager {
+  constructor(args) {
+    super(args);
+
+    const stream = new Stream(args.source);
+    this.pdfDocument = new PDFDocument(this, stream);
+    this._loadedStreamPromise = Promise.resolve(stream);
+  }
+
+  async ensure(obj, prop, args) {
+    const value = obj[prop];
+    if (typeof value === "function") {
+      return value.apply(obj, args);
+    }
+    return value;
+  }
+
+  requestRange(begin, end) {
+    return Promise.resolve();
+  }
+
+  requestLoadedStream(noFetch = false) {
+    return this._loadedStreamPromise;
+  }
+
+  terminate(reason) {}
+}
+
+class NetworkPdfManager extends BasePdfManager {
+  constructor(args) {
+    super(args);
+
+    this.streamManager = new ChunkedStreamManager(args.source, {
+      msgHandler: args.handler,
       length: args.length,
       disableAutoFetch: args.disableAutoFetch,
       rangeChunkSize: args.rangeChunkSize,
-    };
-    this.streamManager = new ChunkedStreamManager(pdfNetworkStream, params);
+    });
     this.pdfDocument = new PDFDocument(this, this.streamManager.getStream());
   }
 
-  Util.inherit(NetworkPdfManager, BasePdfManager, {
-    ensure: function NetworkPdfManager_ensure(obj, prop, args) {
-      var pdfManager = this;
+  async ensure(obj, prop, args) {
+    try {
+      const value = obj[prop];
+      if (typeof value === "function") {
+        return value.apply(obj, args);
+      }
+      return value;
+    } catch (ex) {
+      if (!(ex instanceof MissingDataException)) {
+        throw ex;
+      }
+      await this.requestRange(ex.begin, ex.end);
+      return this.ensure(obj, prop, args);
+    }
+  }
 
-      return new Promise(function (resolve, reject) {
-        function ensureHelper() {
-          try {
-            var result;
-            var value = obj[prop];
-            if (typeof value === 'function') {
-              result = value.apply(obj, args);
-            } else {
-              result = value;
-            }
-            resolve(result);
-          } catch (e) {
-            if (!(e instanceof MissingDataException)) {
-              reject(e);
-              return;
-            }
-            pdfManager.streamManager.requestRange(e.begin, e.end).
-              then(ensureHelper, reject);
-          }
-        }
+  requestRange(begin, end) {
+    return this.streamManager.requestRange(begin, end);
+  }
 
-        ensureHelper();
-      });
-    },
+  requestLoadedStream(noFetch = false) {
+    return this.streamManager.requestAllChunks(noFetch);
+  }
 
-    requestRange: function NetworkPdfManager_requestRange(begin, end) {
-      return this.streamManager.requestRange(begin, end);
-    },
+  sendProgressiveData(chunk) {
+    this.streamManager.onReceiveData({ chunk });
+  }
 
-    requestLoadedStream: function NetworkPdfManager_requestLoadedStream() {
-      this.streamManager.requestAllChunks();
-    },
+  terminate(reason) {
+    this.streamManager.abort(reason);
+  }
+}
 
-    sendProgressiveData:
-        function NetworkPdfManager_sendProgressiveData(chunk) {
-      this.streamManager.onReceiveData({ chunk, });
-    },
-
-    onLoadedStream: function NetworkPdfManager_onLoadedStream() {
-      return this.streamManager.onLoadedStream();
-    },
-
-    terminate: function NetworkPdfManager_terminate() {
-      this.streamManager.abort();
-    },
-  });
-
-  return NetworkPdfManager;
-})();
-
-export {
-  LocalPdfManager,
-  NetworkPdfManager,
-};
+export { LocalPdfManager, NetworkPdfManager };

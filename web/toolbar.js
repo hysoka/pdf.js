@@ -13,14 +13,16 @@
  * limitations under the License.
  */
 
-import {
-  animationStarted, DEFAULT_SCALE, DEFAULT_SCALE_VALUE, MAX_SCALE,
-  MIN_SCALE, noContextMenuHandler, NullL10n
-} from './ui_utils';
+/** @typedef {import("./event_utils.js").EventBus} EventBus */
 
-const PAGE_NUMBER_LOADING_INDICATOR = 'visiblePageIsLoading';
-const SCALE_SELECT_CONTAINER_PADDING = 8;
-const SCALE_SELECT_PADDING = 22;
+import { AnnotationEditorType, ColorPicker, noContextMenu } from "pdfjs-lib";
+import {
+  DEFAULT_SCALE,
+  DEFAULT_SCALE_VALUE,
+  MAX_SCALE,
+  MIN_SCALE,
+  toggleExpandedBtn,
+} from "./ui_utils.js";
 
 /**
  * @typedef {Object} ToolbarOptions
@@ -28,236 +30,362 @@ const SCALE_SELECT_PADDING = 22;
  * @property {HTMLSpanElement} numPages - Label that contains number of pages.
  * @property {HTMLInputElement} pageNumber - Control for display and user input
  *   of the current page number.
- * @property {HTMLSpanElement} scaleSelectContainer - Container where scale
- *   controls are placed. The width is adjusted on UI initialization.
  * @property {HTMLSelectElement} scaleSelect - Scale selection control.
+ *   Its width is adjusted, when necessary, on UI localization.
  * @property {HTMLOptionElement} customScaleOption - The item used to display
  *   a non-predefined scale.
  * @property {HTMLButtonElement} previous - Button to go to the previous page.
  * @property {HTMLButtonElement} next - Button to go to the next page.
  * @property {HTMLButtonElement} zoomIn - Button to zoom in the pages.
  * @property {HTMLButtonElement} zoomOut - Button to zoom out the pages.
- * @property {HTMLButtonElement} viewFind - Button to open find bar.
- * @property {HTMLButtonElement} openFile - Button to open a new document.
- * @property {HTMLButtonElement} presentationModeButton - Button to switch to
- *   presentation mode.
+ * @property {HTMLButtonElement} editorFreeTextButton - Button to switch to
+ *   FreeText editing.
  * @property {HTMLButtonElement} download - Button to download the document.
- * @property {HTMLAElement} viewBookmark - Element to link current url of
- *   the page view.
  */
 
 class Toolbar {
+  #colorPicker = null;
+
+  #opts;
+
   /**
    * @param {ToolbarOptions} options
-   * @param {HTMLDivElement} mainContainer
    * @param {EventBus} eventBus
-   * @param {IL10n} l10n - Localization service.
+   * @param {number} toolbarDensity - The toolbar density value.
+   *   The possible values are:
+   *    - 0 (default) - The regular toolbar size.
+   *    - 1 (compact) - The small toolbar size.
+   *    - 2 (touch) - The large toolbar size.
    */
-  constructor(options, mainContainer, eventBus, l10n = NullL10n) {
-    this.toolbar = options.container;
-    this.mainContainer = mainContainer;
+  constructor(options, eventBus, toolbarDensity = 0) {
+    this.#opts = options;
     this.eventBus = eventBus;
-    this.l10n = l10n;
-    this.items = options;
+    const buttons = [
+      { element: options.previous, eventName: "previouspage" },
+      { element: options.next, eventName: "nextpage" },
+      { element: options.zoomIn, eventName: "zoomin" },
+      { element: options.zoomOut, eventName: "zoomout" },
+      { element: options.print, eventName: "print" },
+      { element: options.download, eventName: "download" },
+      {
+        element: options.editorFreeTextButton,
+        eventName: "switchannotationeditormode",
+        eventDetails: {
+          get mode() {
+            const { classList } = options.editorFreeTextButton;
+            return classList.contains("toggled")
+              ? AnnotationEditorType.NONE
+              : AnnotationEditorType.FREETEXT;
+          },
+        },
+      },
+      {
+        element: options.editorHighlightButton,
+        eventName: "switchannotationeditormode",
+        eventDetails: {
+          get mode() {
+            const { classList } = options.editorHighlightButton;
+            return classList.contains("toggled")
+              ? AnnotationEditorType.NONE
+              : AnnotationEditorType.HIGHLIGHT;
+          },
+        },
+      },
+      {
+        element: options.editorInkButton,
+        eventName: "switchannotationeditormode",
+        eventDetails: {
+          get mode() {
+            const { classList } = options.editorInkButton;
+            return classList.contains("toggled")
+              ? AnnotationEditorType.NONE
+              : AnnotationEditorType.INK;
+          },
+        },
+      },
+      {
+        element: options.editorStampButton,
+        eventName: "switchannotationeditormode",
+        eventDetails: {
+          get mode() {
+            const { classList } = options.editorStampButton;
+            return classList.contains("toggled")
+              ? AnnotationEditorType.NONE
+              : AnnotationEditorType.STAMP;
+          },
+        },
+        telemetry: {
+          type: "editing",
+          data: { action: "pdfjs.image.icon_click" },
+        },
+      },
+      {
+        element: options.editorSignatureButton,
+        eventName: "switchannotationeditormode",
+        eventDetails: {
+          get mode() {
+            const { classList } = options.editorSignatureButton;
+            return classList.contains("toggled")
+              ? AnnotationEditorType.NONE
+              : AnnotationEditorType.SIGNATURE;
+          },
+        },
+      },
+    ];
 
-    this._wasLocalized = false;
+    // Bind the event listeners for click and various other actions.
+    this.#bindListeners(buttons);
+
+    this.#updateToolbarDensity({ value: toolbarDensity });
     this.reset();
+  }
 
-    // Bind the event listeners for click and hand tool actions.
-    this._bindListeners();
+  #updateToolbarDensity({ value }) {
+    let name = "normal";
+    switch (value) {
+      case 1:
+        name = "compact";
+        break;
+      case 2:
+        name = "touch";
+        break;
+    }
+    document.documentElement.setAttribute("data-toolbar-density", name);
   }
 
   setPageNumber(pageNumber, pageLabel) {
     this.pageNumber = pageNumber;
     this.pageLabel = pageLabel;
-    this._updateUIState(false);
+    this.#updateUIState(false);
   }
 
   setPagesCount(pagesCount, hasPageLabels) {
     this.pagesCount = pagesCount;
     this.hasPageLabels = hasPageLabels;
-    this._updateUIState(true);
+    this.#updateUIState(true);
   }
 
   setPageScale(pageScaleValue, pageScale) {
-    this.pageScaleValue = pageScaleValue;
+    this.pageScaleValue = (pageScaleValue || pageScale).toString();
     this.pageScale = pageScale;
-    this._updateUIState(false);
+    this.#updateUIState(false);
   }
 
   reset() {
+    this.#colorPicker = null;
     this.pageNumber = 0;
     this.pageLabel = null;
     this.hasPageLabels = false;
     this.pagesCount = 0;
     this.pageScaleValue = DEFAULT_SCALE_VALUE;
     this.pageScale = DEFAULT_SCALE;
-    this._updateUIState(true);
+    this.#updateUIState(true);
+    this.updateLoadingIndicatorState();
+
+    // Reset the Editor buttons too, since they're document specific.
+    this.#editorModeChanged({ mode: AnnotationEditorType.DISABLE });
   }
 
-  _bindListeners() {
-    let { eventBus, items, } = this;
-    let self = this;
+  #bindListeners(buttons) {
+    const { eventBus } = this;
+    const {
+      editorHighlightColorPicker,
+      editorHighlightButton,
+      pageNumber,
+      scaleSelect,
+    } = this.#opts;
+    const self = this;
 
-    items.previous.addEventListener('click', function() {
-      eventBus.dispatch('previouspage');
-    });
-
-    items.next.addEventListener('click', function() {
-      eventBus.dispatch('nextpage');
-    });
-
-    items.zoomIn.addEventListener('click', function() {
-      eventBus.dispatch('zoomin');
-    });
-
-    items.zoomOut.addEventListener('click', function() {
-      eventBus.dispatch('zoomout');
-    });
-
-    items.pageNumber.addEventListener('click', function() {
+    // The buttons within the toolbar.
+    for (const { element, eventName, eventDetails, telemetry } of buttons) {
+      element.addEventListener("click", evt => {
+        if (eventName !== null) {
+          eventBus.dispatch(eventName, {
+            source: this,
+            ...eventDetails,
+            // evt.detail is the number of clicks.
+            isFromKeyboard: evt.detail === 0,
+          });
+        }
+        if (telemetry) {
+          eventBus.dispatch("reporttelemetry", {
+            source: this,
+            details: telemetry,
+          });
+        }
+      });
+    }
+    // The non-button elements within the toolbar.
+    pageNumber.addEventListener("click", function () {
       this.select();
     });
-
-    items.pageNumber.addEventListener('change', function() {
-      eventBus.dispatch('pagenumberchanged', {
+    pageNumber.addEventListener("change", function () {
+      eventBus.dispatch("pagenumberchanged", {
         source: self,
         value: this.value,
       });
     });
 
-    items.scaleSelect.addEventListener('change', function() {
-      if (this.value === 'custom') {
+    scaleSelect.addEventListener("change", function () {
+      if (this.value === "custom") {
         return;
       }
-      eventBus.dispatch('scalechanged', {
+      eventBus.dispatch("scalechanged", {
         source: self,
         value: this.value,
       });
     });
-
-    items.presentationModeButton.addEventListener('click', function() {
-      eventBus.dispatch('presentationmode');
+    // Here we depend on browsers dispatching the "click" event *after* the
+    // "change" event, when the <select>-element changes.
+    scaleSelect.addEventListener("click", function ({ target }) {
+      // Remove focus when an <option>-element was *clicked*, to improve the UX
+      // for mouse users (fixes bug 1300525 and issue 4923).
+      if (
+        this.value === self.pageScaleValue &&
+        target.tagName.toUpperCase() === "OPTION"
+      ) {
+        this.blur();
+      }
     });
-
-    items.openFile.addEventListener('click', function() {
-      eventBus.dispatch('openfile');
-    });
-
-    items.print.addEventListener('click', function() {
-      eventBus.dispatch('print');
-    });
-
-    items.download.addEventListener('click', function() {
-      eventBus.dispatch('download');
-    });
-
     // Suppress context menus for some controls.
-    items.scaleSelect.oncontextmenu = noContextMenuHandler;
+    scaleSelect.oncontextmenu = noContextMenu;
 
-    eventBus.on('localized', () => {
-      this._localized();
+    eventBus._on(
+      "annotationeditormodechanged",
+      this.#editorModeChanged.bind(this)
+    );
+    eventBus._on("showannotationeditorui", ({ mode }) => {
+      switch (mode) {
+        case AnnotationEditorType.HIGHLIGHT:
+          editorHighlightButton.click();
+          break;
+      }
     });
-  }
+    eventBus._on("toolbardensity", this.#updateToolbarDensity.bind(this));
 
-  _localized() {
-    this._wasLocalized = true;
-    this._adjustScaleWidth();
-    this._updateUIState(true);
-  }
+    if (editorHighlightColorPicker) {
+      eventBus._on("annotationeditoruimanager", ({ uiManager }) => {
+        const cp = (this.#colorPicker = new ColorPicker({ uiManager }));
+        uiManager.setMainHighlightColorPicker(cp);
+        editorHighlightColorPicker.append(cp.renderMainDropdown());
+      });
 
-  _updateUIState(resetNumPages = false) {
-    if (!this._wasLocalized) {
-      // Don't update the UI state until we localize the toolbar.
-      return;
+      eventBus._on("mainhighlightcolorpickerupdatecolor", ({ value }) => {
+        this.#colorPicker?.updateColor(value);
+      });
     }
-    let { pageNumber, pagesCount, items, } = this;
-    let scaleValue = (this.pageScaleValue || this.pageScale).toString();
-    let scale = this.pageScale;
+  }
+
+  #editorModeChanged({ mode }) {
+    const {
+      editorFreeTextButton,
+      editorFreeTextParamsToolbar,
+      editorHighlightButton,
+      editorHighlightParamsToolbar,
+      editorInkButton,
+      editorInkParamsToolbar,
+      editorStampButton,
+      editorStampParamsToolbar,
+      editorSignatureButton,
+      editorSignatureParamsToolbar,
+    } = this.#opts;
+
+    toggleExpandedBtn(
+      editorFreeTextButton,
+      mode === AnnotationEditorType.FREETEXT,
+      editorFreeTextParamsToolbar
+    );
+    toggleExpandedBtn(
+      editorHighlightButton,
+      mode === AnnotationEditorType.HIGHLIGHT,
+      editorHighlightParamsToolbar
+    );
+    toggleExpandedBtn(
+      editorInkButton,
+      mode === AnnotationEditorType.INK,
+      editorInkParamsToolbar
+    );
+    toggleExpandedBtn(
+      editorStampButton,
+      mode === AnnotationEditorType.STAMP,
+      editorStampParamsToolbar
+    );
+    toggleExpandedBtn(
+      editorSignatureButton,
+      mode === AnnotationEditorType.SIGNATURE,
+      editorSignatureParamsToolbar
+    );
+
+    const isDisable = mode === AnnotationEditorType.DISABLE;
+    editorFreeTextButton.disabled = isDisable;
+    editorHighlightButton.disabled = isDisable;
+    editorInkButton.disabled = isDisable;
+    editorStampButton.disabled = isDisable;
+    editorSignatureButton.disabled = isDisable;
+  }
+
+  #updateUIState(resetNumPages = false) {
+    const { pageNumber, pagesCount, pageScaleValue, pageScale } = this;
+    const opts = this.#opts;
 
     if (resetNumPages) {
       if (this.hasPageLabels) {
-        items.pageNumber.type = 'text';
+        opts.pageNumber.type = "text";
+
+        opts.numPages.setAttribute("data-l10n-id", "pdfjs-page-of-pages");
       } else {
-        items.pageNumber.type = 'number';
-        this.l10n.get('of_pages', { pagesCount, }, 'of {{pagesCount}}').
-            then((msg) => {
-          items.numPages.textContent = msg;
-        });
+        opts.pageNumber.type = "number";
+
+        opts.numPages.setAttribute("data-l10n-id", "pdfjs-of-pages");
+        opts.numPages.setAttribute(
+          "data-l10n-args",
+          JSON.stringify({ pagesCount })
+        );
       }
-      items.pageNumber.max = pagesCount;
+      opts.pageNumber.max = pagesCount;
     }
 
     if (this.hasPageLabels) {
-      items.pageNumber.value = this.pageLabel;
-      this.l10n.get('page_of_pages', { pageNumber, pagesCount, },
-                    '({{pageNumber}} of {{pagesCount}})').then((msg) => {
-        items.numPages.textContent = msg;
-      });
+      opts.pageNumber.value = this.pageLabel;
+
+      opts.numPages.setAttribute(
+        "data-l10n-args",
+        JSON.stringify({ pageNumber, pagesCount })
+      );
     } else {
-      items.pageNumber.value = pageNumber;
+      opts.pageNumber.value = pageNumber;
     }
 
-    items.previous.disabled = (pageNumber <= 1);
-    items.next.disabled = (pageNumber >= pagesCount);
+    opts.previous.disabled = pageNumber <= 1;
+    opts.next.disabled = pageNumber >= pagesCount;
 
-    items.zoomOut.disabled = (scale <= MIN_SCALE);
-    items.zoomIn.disabled = (scale >= MAX_SCALE);
+    opts.zoomOut.disabled = pageScale <= MIN_SCALE;
+    opts.zoomIn.disabled = pageScale >= MAX_SCALE;
 
-    let customScale = Math.round(scale * 10000) / 100;
-    this.l10n.get('page_scale_percent', { scale: customScale, },
-                  '{{scale}}%').then((msg) => {
-      let options = items.scaleSelect.options;
-      let predefinedValueFound = false;
-      for (let i = 0, ii = options.length; i < ii; i++) {
-        let option = options[i];
-        if (option.value !== scaleValue) {
-          option.selected = false;
-          continue;
-        }
-        option.selected = true;
-        predefinedValueFound = true;
+    let predefinedValueFound = false;
+    for (const option of opts.scaleSelect.options) {
+      if (option.value !== pageScaleValue) {
+        option.selected = false;
+        continue;
       }
-      if (!predefinedValueFound) {
-        items.customScaleOption.textContent = msg;
-        items.customScaleOption.selected = true;
-      }
-    });
+      option.selected = true;
+      predefinedValueFound = true;
+    }
+    if (!predefinedValueFound) {
+      opts.customScaleOption.selected = true;
+      opts.customScaleOption.setAttribute(
+        "data-l10n-args",
+        JSON.stringify({
+          scale: Math.round(pageScale * 10000) / 100,
+        })
+      );
+    }
   }
 
   updateLoadingIndicatorState(loading = false) {
-    let pageNumberInput = this.items.pageNumber;
-
-    if (loading) {
-      pageNumberInput.classList.add(PAGE_NUMBER_LOADING_INDICATOR);
-    } else {
-      pageNumberInput.classList.remove(PAGE_NUMBER_LOADING_INDICATOR);
-    }
-  }
-
-  _adjustScaleWidth() {
-    let container = this.items.scaleSelectContainer;
-    let select = this.items.scaleSelect;
-
-    animationStarted.then(function() {
-      // Adjust the width of the zoom box to fit the content.
-      // Note: If the window is narrow enough that the zoom box is not
-      //       visible, we temporarily show it to be able to adjust its width.
-      if (container.clientWidth === 0) {
-        container.setAttribute('style', 'display: inherit;');
-      }
-      if (container.clientWidth > 0) {
-        select.setAttribute('style', 'min-width: inherit;');
-        let width = select.clientWidth + SCALE_SELECT_CONTAINER_PADDING;
-        select.setAttribute('style', 'min-width: ' +
-                                     (width + SCALE_SELECT_PADDING) + 'px;');
-        container.setAttribute('style', 'min-width: ' + width + 'px; ' +
-                                        'max-width: ' + width + 'px;');
-      }
-    });
+    const { pageNumber } = this.#opts;
+    pageNumber.classList.toggle("loading", loading);
   }
 }
 
-export {
-  Toolbar,
-};
+export { Toolbar };

@@ -13,66 +13,69 @@
  * limitations under the License.
  */
 
-import { createObjectURL, shadow } from '../shared/util';
-import { DecodeStream } from './stream';
-import { isDict } from './primitives';
-import { JpegImage } from './jpg';
+import { FeatureTest, shadow, warn } from "../shared/util.js";
+import { DecodeStream } from "./decode_stream.js";
+import { Dict } from "./primitives.js";
+import { JpegImage } from "./jpg.js";
 
 /**
- * Depending on the type of JPEG a JpegStream is handled in different ways. For
- * JPEG's that are supported natively such as DeviceGray and DeviceRGB the image
- * data is stored and then loaded by the browser. For unsupported JPEG's we use
- * a library to decode these images and the stream behaves like all the other
- * DecodeStreams.
+ * For JPEG's we use a library to decode these images and the stream behaves
+ * like all the other DecodeStreams.
  */
-let JpegStream = (function JpegStreamClosure() {
-  function JpegStream(stream, maybeLength, dict, params) {
-    // Some images may contain 'junk' before the SOI (start-of-image) marker.
-    // Note: this seems to mainly affect inline images.
-    let ch;
-    while ((ch = stream.getByte()) !== -1) {
-      if (ch === 0xFF) { // Find the first byte of the SOI marker (0xFFD8).
-        stream.skip(-1); // Reset the stream position to the SOI.
-        break;
-      }
-    }
-    this.stream = stream;
-    this.maybeLength = maybeLength;
-    this.dict = dict;
-    this.params = params;
+class JpegStream extends DecodeStream {
+  static #isImageDecoderSupported = FeatureTest.isImageDecoderSupported;
 
-    DecodeStream.call(this, maybeLength);
+  constructor(stream, maybeLength, params) {
+    super(maybeLength);
+
+    this.stream = stream;
+    this.dict = stream.dict;
+    this.maybeLength = maybeLength;
+    this.params = params;
   }
 
-  JpegStream.prototype = Object.create(DecodeStream.prototype);
+  static get canUseImageDecoder() {
+    return shadow(
+      this,
+      "canUseImageDecoder",
+      this.#isImageDecoderSupported
+        ? ImageDecoder.isTypeSupported("image/jpeg")
+        : Promise.resolve(false)
+    );
+  }
 
-  Object.defineProperty(JpegStream.prototype, 'bytes', {
-    get: function JpegStream_bytes() {
-      // If `this.maybeLength` is null, we'll get the entire stream.
-      return shadow(this, 'bytes', this.stream.getBytes(this.maybeLength));
-    },
-    configurable: true,
-  });
+  static setOptions({ isImageDecoderSupported = false }) {
+    this.#isImageDecoderSupported = isImageDecoderSupported;
+  }
 
-  JpegStream.prototype.ensureBuffer = function(requested) {
+  get bytes() {
+    // If `this.maybeLength` is null, we'll get the entire stream.
+    return shadow(this, "bytes", this.stream.getBytes(this.maybeLength));
+  }
+
+  ensureBuffer(requested) {
     // No-op, since `this.readBlock` will always parse the entire image and
     // directly insert all of its data into `this.buffer`.
-  };
+  }
 
-  JpegStream.prototype.readBlock = function() {
-    if (this.eof) {
-      return;
-    }
-    let jpegImage = new JpegImage();
+  readBlock() {
+    this.decodeImage();
+  }
+
+  get jpegOptions() {
+    const jpegOptions = {
+      decodeTransform: undefined,
+      colorTransform: undefined,
+    };
 
     // Checking if values need to be transformed before conversion.
-    let decodeArr = this.dict.getArray('Decode', 'D');
-    if (this.forceRGB && Array.isArray(decodeArr)) {
-      let bitsPerComponent = this.dict.get('BitsPerComponent') || 8;
-      let decodeArrLength = decodeArr.length;
-      let transform = new Int32Array(decodeArrLength);
+    const decodeArr = this.dict.getArray("D", "Decode");
+    if ((this.forceRGBA || this.forceRGB) && Array.isArray(decodeArr)) {
+      const bitsPerComponent = this.dict.get("BPC", "BitsPerComponent") || 8;
+      const decodeArrLength = decodeArr.length;
+      const transform = new Int32Array(decodeArrLength);
       let transformNeeded = false;
-      let maxValue = (1 << bitsPerComponent) - 1;
+      const maxValue = (1 << bitsPerComponent) - 1;
       for (let i = 0; i < decodeArrLength; i += 2) {
         transform[i] = ((decodeArr[i + 1] - decodeArr[i]) * 256) | 0;
         transform[i + 1] = (decodeArr[i] * maxValue) | 0;
@@ -81,32 +84,116 @@ let JpegStream = (function JpegStreamClosure() {
         }
       }
       if (transformNeeded) {
-        jpegImage.decodeTransform = transform;
+        jpegOptions.decodeTransform = transform;
       }
     }
     // Fetching the 'ColorTransform' entry, if it exists.
-    if (isDict(this.params)) {
-      let colorTransform = this.params.get('ColorTransform');
+    if (this.params instanceof Dict) {
+      const colorTransform = this.params.get("ColorTransform");
       if (Number.isInteger(colorTransform)) {
-        jpegImage.colorTransform = colorTransform;
+        jpegOptions.colorTransform = colorTransform;
       }
     }
+    return shadow(this, "jpegOptions", jpegOptions);
+  }
 
-    jpegImage.parse(this.bytes);
-    let data = jpegImage.getData(this.drawWidth, this.drawHeight,
-                                 this.forceRGB);
+  #skipUselessBytes(data) {
+    // Some images may contain 'junk' before the SOI (start-of-image) marker.
+    // Note: this seems to mainly affect inline images.
+    for (let i = 0, ii = data.length - 1; i < ii; i++) {
+      if (data[i] === 0xff && data[i + 1] === 0xd8) {
+        if (i > 0) {
+          data = data.subarray(i);
+        }
+        break;
+      }
+    }
+    return data;
+  }
+
+  decodeImage(bytes) {
+    if (this.eof) {
+      return this.buffer;
+    }
+    bytes = this.#skipUselessBytes(bytes || this.bytes);
+
+    // TODO: if an image has a mask we need to combine the data.
+    // So ideally get a VideoFrame from getTransferableImage and then use
+    // copyTo.
+
+    const jpegImage = new JpegImage(this.jpegOptions);
+    jpegImage.parse(bytes);
+    const data = jpegImage.getData({
+      width: this.drawWidth,
+      height: this.drawHeight,
+      forceRGBA: this.forceRGBA,
+      forceRGB: this.forceRGB,
+      isSourcePDF: true,
+    });
     this.buffer = data;
     this.bufferLength = data.length;
     this.eof = true;
-  };
 
-  JpegStream.prototype.getIR = function(forceDataSchema = false) {
-    return createObjectURL(this.bytes, 'image/jpeg', forceDataSchema);
-  };
+    return this.buffer;
+  }
 
-  return JpegStream;
-})();
+  get canAsyncDecodeImageFromBuffer() {
+    return this.stream.isAsync;
+  }
 
-export {
-  JpegStream,
-};
+  async getTransferableImage() {
+    if (!(await JpegStream.canUseImageDecoder)) {
+      return null;
+    }
+    const jpegOptions = this.jpegOptions;
+    if (jpegOptions.decodeTransform) {
+      // TODO: We could decode the image thanks to ImageDecoder and then
+      // get the pixels with copyTo and apply the decodeTransform.
+      return null;
+    }
+    let decoder;
+    try {
+      // TODO: If the stream is Flate & DCT we could try to just pipe the
+      // the DecompressionStream into the ImageDecoder: it'll avoid the
+      // intermediate ArrayBuffer.
+      const bytes =
+        (this.canAsyncDecodeImageFromBuffer &&
+          (await this.stream.asyncGetBytes())) ||
+        this.bytes;
+      if (!bytes) {
+        return null;
+      }
+      let data = this.#skipUselessBytes(bytes);
+      const useImageDecoder = JpegImage.canUseImageDecoder(
+        data,
+        jpegOptions.colorTransform
+      );
+      if (!useImageDecoder) {
+        return null;
+      }
+      if (useImageDecoder.exifStart) {
+        // Replace the entire EXIF-block with dummy data, to ensure that a
+        // non-default EXIF orientation won't cause the image to be rotated
+        // when using `ImageDecoder` (fixes bug1942064.pdf).
+        //
+        // Copy the data first, to avoid modifying the original PDF document.
+        data = data.slice();
+        data.fill(0x00, useImageDecoder.exifStart, useImageDecoder.exifEnd);
+      }
+      decoder = new ImageDecoder({
+        data,
+        type: "image/jpeg",
+        preferAnimation: false,
+      });
+
+      return (await decoder.decode()).image;
+    } catch (reason) {
+      warn(`getTransferableImage - failed: "${reason}".`);
+      return null;
+    } finally {
+      decoder?.close();
+    }
+  }
+}
+
+export { JpegStream };
